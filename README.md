@@ -1,130 +1,88 @@
-# AWS Project - Build a Full End-to-End Web Application with 7 Services | Step-by-Step Tutorial
+# Wild Rydes: a serverless unicorn ride-sharing app on AWS
 
-This repo contains the code files used in this [YouTube video](https://youtu.be/K6v6t5z6AsU).
+"Uber for unicorns". A full-stack serverless web application built **by hand in the AWS Console**: users register and log in, click a spot on a map to request a unicorn, and the ride is saved in a database.
 
-## TL;DR
-We're creating a web application for a unicorn ride-sharing service called Wild Rydes (from the original [Amazon workshop](https://aws.amazon.com/serverless-workshops)).  The app uses IAM, Amplify, Cognito, Lambda, API Gateway and DynamoDB, with code stored in GitHub and incorporated into a CI/CD pipeline with Amplify.
+> The web app is the official AWS **Wild Rydes** sample project, and the build follows a YouTube tutorial by **Tiny Technical Tutorials**. My contribution: rebuilding it from scratch in `eu-central-1` with the newer AWS console, the full written guide, the problems I hit and how I fixed them, and the clean-up notes. See [Credits](#credits).
 
-The app will let you create an account and log in, then request a ride by clicking on a map (powered by ArcGIS).  The code can also be extended to build out more functionality.
+| Landing page | Requesting a unicorn |
+|---|---|
+| ![Landing page](docs/landing-page.jpg) | ![Ride page: the unicorn has arrived](docs/ride-page.png) |
 
-## Cost
-All services used are eligible for the [AWS Free Tier](https://aws.amazon.com/free/).  Outside of the Free Tier, there may be small charges associated with building the app (less than $1 USD), but charges will continue to incur if you leave the app running.  Please see the end of the YouTube video for instructions on how to delete all resources used in the video.
+The rides are stored in DynamoDB:
 
-## The Application Code
-The application code is here in this repository.
+![DynamoDB items](docs/dynamodb-items.png)
 
-## The Lambda Function Code
-Here is the code for the Lambda function, originally taken from the [AWS workshop](https://aws.amazon.com/getting-started/hands-on/build-serverless-web-app-lambda-apigateway-s3-dynamodb-cognito/module-3/ ), and updated for Node 20.x:
+## Architecture
 
-```node
-import { randomBytes } from 'crypto';
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
-
-const client = new DynamoDBClient({});
-const ddb = DynamoDBDocumentClient.from(client);
-
-const fleet = [
-    { Name: 'Angel', Color: 'White', Gender: 'Female' },
-    { Name: 'Gil', Color: 'White', Gender: 'Male' },
-    { Name: 'Rocinante', Color: 'Yellow', Gender: 'Female' },
-];
-
-export const handler = async (event, context) => {
-    if (!event.requestContext.authorizer) {
-        return errorResponse('Authorization not configured', context.awsRequestId);
-    }
-
-    const rideId = toUrlString(randomBytes(16));
-    console.log('Received event (', rideId, '): ', event);
-
-    const username = event.requestContext.authorizer.claims['cognito:username'];
-    const requestBody = JSON.parse(event.body);
-    const pickupLocation = requestBody.PickupLocation;
-
-    const unicorn = findUnicorn(pickupLocation);
-
-    try {
-        await recordRide(rideId, username, unicorn);
-        return {
-            statusCode: 201,
-            body: JSON.stringify({
-                RideId: rideId,
-                Unicorn: unicorn,
-                Eta: '30 seconds',
-                Rider: username,
-            }),
-            headers: {
-                'Access-Control-Allow-Origin': '*',
-            },
-        };
-    } catch (err) {
-        console.error(err);
-        return errorResponse(err.message, context.awsRequestId);
-    }
-};
-
-function findUnicorn(pickupLocation) {
-    console.log('Finding unicorn for ', pickupLocation.Latitude, ', ', pickupLocation.Longitude);
-    return fleet[Math.floor(Math.random() * fleet.length)];
-}
-
-async function recordRide(rideId, username, unicorn) {
-    const params = {
-        TableName: 'Rides',
-        Item: {
-            RideId: rideId,
-            User: username,
-            Unicorn: unicorn,
-            RequestTime: new Date().toISOString(),
-        },
-    };
-    await ddb.send(new PutCommand(params));
-}
-
-function toUrlString(buffer) {
-    return buffer.toString('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=/g, '');
-}
-
-function errorResponse(errorMessage, awsRequestId) {
-    return {
-        statusCode: 500,
-        body: JSON.stringify({
-            Error: errorMessage,
-            Reference: awsRequestId,
-        }),
-        headers: {
-            'Access-Control-Allow-Origin': '*',
-        },
-    };
-}
+```mermaid
+flowchart LR
+    U["User / Browser"] -->|"loads the site"| A["AWS Amplify<br/>hosting + CI/CD"]
+    GH[("GitHub repo<br/>HTML, CSS, JS")] -->|"every commit<br/>triggers a deploy"| A
+    U -->|"sign up / sign in"| C["Amazon Cognito<br/>user pool"]
+    U -->|"POST /ride<br/>+ ID token"| G["API Gateway<br/>REST API"]
+    G -->|"authorizer<br/>checks the token"| C
+    G --> L["AWS Lambda<br/>Node.js"]
+    L -->|"PutItem"| D[("DynamoDB<br/>Rides table")]
+    I["IAM execution role"] -.->|"permissions"| L
 ```
 
-## The Lambda Function Test Function
-Here is the code used to test the Lambda function:
+| Service | Role in the project |
+|---|---|
+| **GitHub** | Source control for the site (HTML, CSS, JavaScript) |
+| **Amplify** | Hosts the site and redeploys automatically on every commit |
+| **Cognito** | User registration, email verification and login |
+| **API Gateway (REST)** | Public `POST /ride` endpoint, protected by a Cognito authorizer, with CORS |
+| **Lambda** | Picks a unicorn and records the ride |
+| **DynamoDB** | Stores the rides (`RideId` is the partition key) |
+| **IAM** | Execution role that lets the Lambda write to this one table |
 
-```json
-{
-    "path": "/ride",
-    "httpMethod": "POST",
-    "headers": {
-        "Accept": "*/*",
-        "Authorization": "eyJraWQiOiJLTzRVMWZs",
-        "content-type": "application/json; charset=UTF-8"
-    },
-    "queryStringParameters": null,
-    "pathParameters": null,
-    "requestContext": {
-        "authorizer": {
-            "claims": {
-                "cognito:username": "the_username"
-            }
-        }
-    },
-    "body": "{\"PickupLocation\":{\"Latitude\":47.6174755835663,\"Longitude\":-122.28837066650185}}"
-}
+Region used: `eu-central-1` (Frankfurt).
+
+## How a ride works
+
+1. The user registers (Cognito emails a verification code) and signs in.
+2. The browser gets an **ID token** from Cognito.
+3. Clicking the map sends `POST /ride` with the pickup location, and the token in the `Authorization` header.
+4. API Gateway lets the **Cognito authorizer** validate the token. A bad or expired token returns `401`.
+5. The Lambda picks a unicorn, writes the ride to DynamoDB and returns the unicorn's details.
+6. The page shows "your unicorn is on the way", then "has arrived".
+
+## Repository layout
+
+```
+wildrydes-site/
+├── css/ fonts/ images/ js/        # Original Wild Rydes site (from the template)
+│   └── js/config.js               # The only file I edit: Cognito IDs + API URL
+├── *.html                         # Landing, register, verify, sign-in and ride pages
+├── docs/                          # Screenshots used in this README
+├── PROJECT_GUIDE.md               # Full step-by-step guide + problems I hit
+├── README-template.md             # Original template README (has the Lambda code and test event)
+└── README.md                      # This file
 ```
 
+The Lambda function code and the test event are in `README-template.md`, as in the original template.
+
+## What I learned
+
+- **User pools and identity pools are different services.** Registration and login need a *user pool*. The Cognito start page can lead you to *identity pools* by mistake.
+- The app logs in from the browser with **SRP**, so the app client needs `ALLOW_USER_SRP_AUTH` turned on.
+- **Names must match exactly** across the Lambda code, the IAM policy and DynamoDB (table name, key name, case included).
+- API Gateway needs **CORS** (the site and the API are on different domains) and a **Deploy** after every change.
+- Tokens **expire after 60 minutes**. A `401` while testing is often just an old token.
+- Everything in the console can be cleaned up in a fixed order, so nothing keeps costing money.
+
+## Clean-up
+
+Everything was deleted after testing: Amplify app, API Gateway API, Lambda, DynamoDB table, Cognito user pool, IAM role, and the CloudWatch log group. Order and details are in the guide.
+
+## Possible next steps
+
+- Rebuild the same stack with **Terraform** and a CI/CD pipeline, like my other projects
+- Add more unicorns, or look up a nearby one instead of picking randomly
+- Restrict CORS to the real site domain and add throttling to the API
+
+## Credits
+
+- **Wild Rydes** sample application by AWS (web app and Lambda logic)
+- Tutorial video by **Tiny Technical Tutorials** on YouTube, and the template repository `tinytechnicaltutorials/wildrydes-site`
+- Guide, troubleshooting notes and documentation: my own write-up
